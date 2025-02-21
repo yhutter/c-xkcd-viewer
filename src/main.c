@@ -9,7 +9,6 @@
 #define INPUT_OVERLAY_ANIMATION_DURATION 0.6f
 
 typedef enum {
-    ease_out_cubic,
     ease_out_expo
 } animation_kind;
 
@@ -21,10 +20,19 @@ typedef struct {
     float duration;
     float progress;
     bool done;
+    bool reverse;
     animation_kind kind;
 } animation_t;
 
-animation_t create_animation(float duration) {
+
+typedef struct {
+    animation_t open_animation;
+    animation_t close_animation;
+    animation_t current_animation;
+    bool open;
+} input_overlay_t;
+
+animation_t create_animation(float duration, animation_kind kind, bool reverse) {
     // Convert to seconds
     float start = SDL_GetTicks() * 0.001f;
     animation_t result = {
@@ -34,7 +42,21 @@ animation_t create_animation(float duration) {
         .end = start + duration,
         .progress = 0.0f,
         .value = 0.0f,
-        .done = false
+        .done = false,
+        .reverse = reverse,
+        .kind = kind
+    };
+    return result;
+}
+
+input_overlay_t create_input_overlay(void) {
+    animation_t open_animation = create_animation(INPUT_OVERLAY_ANIMATION_DURATION, ease_out_expo, false);
+    animation_t close_animation = create_animation(INPUT_OVERLAY_ANIMATION_DURATION, ease_out_expo, true);
+    input_overlay_t result = {
+        .open_animation = open_animation,
+        .close_animation = close_animation,
+        .current_animation = open_animation,
+        .open = true
     };
     return result;
 }
@@ -47,7 +69,7 @@ bool running = false;
 
 Uint64 start_time;
 float seconds_passed = 0.0f;
-animation_t overlay_animation;
+input_overlay_t input_overlay;
 
 static inline float lerp(float min, float max, float t) {
     float range = max - min;
@@ -76,14 +98,12 @@ void update_animation(animation_t* animation) {
         animation->progress = animation->now / animation->end;
         float t = lerp(0.0f, 1.0f, animation->progress);
         switch (animation->kind) {
-            case ease_out_cubic: {
-                animation->value = 1.0f - pow(1.0f - t, 3);
-                break;
-            }
-            case ease_out_expo: {
+            case ease_out_expo:
                 animation->value = 1.0f - pow(2.0f, (-10.0f * t));
                 break;
-            }
+        }
+        if (animation->reverse) {
+            animation->value = remap(animation->value, 0.0f, 1.0f, 1.0f, 0.0f);
         }
     }
 }
@@ -97,9 +117,8 @@ bool initialize() {
 
     // Enable VSync
     SDL_SetRenderVSync(renderer, 1);
-
     start_time = SDL_GetTicks();
-    overlay_animation = create_animation(INPUT_OVERLAY_ANIMATION_DURATION);
+    input_overlay = create_input_overlay();
     return true;
 }
 
@@ -112,7 +131,15 @@ void process(void) {
                 break;
             case SDL_EVENT_KEY_DOWN:
                 if (e.key.key == SDLK_ESCAPE) {
-                    running = false;
+                    // Toggle overlay
+                    input_overlay.open = !input_overlay.open;
+                    // Swap animations
+                    if (input_overlay.open) {
+                        input_overlay.current_animation = input_overlay.open_animation;
+                    }
+                    else {
+                        input_overlay.current_animation = input_overlay.close_animation;
+                    }
                     break;
                 }
         }
@@ -125,17 +152,17 @@ void update(void) {
         SDL_Delay(time_to_wait);
     }
     seconds_passed += FRAME_TARGET_TIME_SECONDS;
-    update_animation(&overlay_animation);
+    update_animation(&input_overlay.current_animation);
     start_time = SDL_GetTicks();
 }
 
-void input_overlay(void) {
+void render_input_overlay(void) {
     SDL_SetRenderDrawColor(renderer, 0xff, 0x18, 0x18, 0xff);
     SDL_FRect input_overlay_rect = {
         .x = 0,
         .y = 0,
         .w = window_width, 
-        .h = overlay_animation.value * (window_height * 0.3f), 
+        .h = input_overlay.current_animation.value * (window_height * 0.3f), 
     };
     SDL_RenderFillRect(renderer, &input_overlay_rect);
 }
@@ -143,9 +170,7 @@ void input_overlay(void) {
 void render(void) {
     SDL_SetRenderDrawColor(renderer, 0x18, 0x18, 0x18, 0xff);
     SDL_RenderClear(renderer);
-
-    input_overlay();
-
+    render_input_overlay();
     SDL_RenderPresent(renderer);
 }
 
