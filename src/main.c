@@ -1,19 +1,22 @@
 #include <SDL3/SDL.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <math.h>
 
 #define FPS 60
 #define FRAME_TARGET_TIME (1000.0f / FPS)
 #define FRAME_TARGET_TIME_SECONDS (FRAME_TARGET_TIME * 0.001f)
 
-#define INPUT_OVERLAY_ANIMATION_DURATION 0.6f
+#define ANIMATION_DURATION 0.6f
+#define XKCD_SIZE 64.0f
+#define MAX_NUM_XKCD 1024
 
 typedef enum {
-    ease_out_expo
+    ease_out_expo,
+    ease_in_sine
 } animation_kind;
 
 typedef struct {
-    float start;
     float now;
     float value;
     float end;
@@ -24,42 +27,13 @@ typedef struct {
     animation_kind kind;
 } animation_t;
 
-
 typedef struct {
-    animation_t open_animation;
-    animation_t close_animation;
-    animation_t current_animation;
-    bool open;
-} input_overlay_t;
-
-animation_t create_animation(float duration, animation_kind kind, bool reverse) {
-    // Convert to seconds
-    float start = SDL_GetTicks() * 0.001f;
-    animation_t result = {
-        .start = start, 
-        .now = 0.0f,
-        .duration = duration,
-        .end = start + duration,
-        .progress = 0.0f,
-        .value = 0.0f,
-        .done = false,
-        .reverse = reverse,
-        .kind = kind
-    };
-    return result;
-}
-
-input_overlay_t create_input_overlay(void) {
-    animation_t open_animation = create_animation(INPUT_OVERLAY_ANIMATION_DURATION, ease_out_expo, false);
-    animation_t close_animation = create_animation(INPUT_OVERLAY_ANIMATION_DURATION, ease_out_expo, true);
-    input_overlay_t result = {
-        .open_animation = open_animation,
-        .close_animation = close_animation,
-        .current_animation = open_animation,
-        .open = true
-    };
-    return result;
-}
+    animation_t animation;
+    bool destroy;
+    int index;
+    SDL_FRect rect;
+    float size;
+} xkcd_t;
 
 SDL_Renderer* renderer = NULL;
 SDL_Window* window = NULL;
@@ -67,9 +41,15 @@ int window_width = 1280;
 int window_height = 720;
 bool running = false;
 
+float mouse_x = 0.0f;
+float mouse_y = 0.0f;
+bool mouse_down = false;
+
 Uint64 start_time;
 float seconds_passed = 0.0f;
-input_overlay_t input_overlay;
+
+xkcd_t xkcds[MAX_NUM_XKCD];
+int num_xkcds = 0;
 
 static inline float lerp(float min, float max, float t) {
     float range = max - min;
@@ -83,23 +63,72 @@ static inline float remap(float value, float in_min, float in_max, float out_min
     return out_min + (percentage * out_range);
 }
 
-static inline float max(float first, float second) {
-    return first > second ? first : second;
+static inline bool inside_rect(float x, float y, float x0, float y0, float w, float h) {
+    if (x >= x0 && x <= (x0 + w) && y >= y0 && y <= (y0 + h)) {
+        return true;
+    }
+    return false;
+}
+
+animation_t create_animation(float duration, animation_kind kind, bool reverse) {
+    animation_t result = {
+        .now = 0.0f,
+        .duration = duration,
+        .progress = 0.0f,
+        .value = 0.0f,
+        .done = false,
+        .reverse = reverse,
+        .kind = kind
+    };
+    return result;
+}
+
+xkcd_t create_xkcd(int index, float x, float y, float size) {
+    animation_t animation = create_animation(ANIMATION_DURATION, ease_out_expo, false);
+    xkcd_t result = {
+        .animation = animation,
+        .destroy = false,
+        .rect = {
+            .x = x,
+            .y = y,
+            .w = 0,
+            .h = 0, 
+        },
+        .size = size,
+        .index = index 
+    };
+    return result;
+}
+
+int xkcd_index_at_mouse(void) {
+    for (int i = 0; i < num_xkcds; i++) {
+        xkcd_t xkcd = xkcds[i];
+        if (inside_rect(mouse_x, mouse_y, xkcd.rect.x, xkcd.rect.y, xkcd.rect.w, xkcd.rect.h)) {
+            return xkcd.index;
+        }
+    }
+    return -1;
 }
 
 void update_animation(animation_t* animation) {
+    if (animation->done) {
+        return;
+    }
     animation->now += FRAME_TARGET_TIME_SECONDS;
-    // Check if animation is done
     if (animation->progress > 1.0f) {
         animation->done = true;
+        return;
     }
     // Keep updating the animation
     else {
-        animation->progress = animation->now / animation->end;
+        animation->progress = animation->now / animation->duration;
         float t = lerp(0.0f, 1.0f, animation->progress);
         switch (animation->kind) {
             case ease_out_expo:
                 animation->value = 1.0f - pow(2.0f, (-10.0f * t));
+                break;
+            case ease_in_sine:
+                animation->value = 1.0f - cosf((t * M_PI) / 2.0f);
                 break;
         }
         if (animation->reverse) {
@@ -118,32 +147,47 @@ bool initialize() {
     // Enable VSync
     SDL_SetRenderVSync(renderer, 1);
     start_time = SDL_GetTicks();
-    input_overlay = create_input_overlay();
+
     return true;
 }
 
 void process(void) {
+    SDL_GetMouseState(&mouse_x, &mouse_y);
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
             case SDL_EVENT_QUIT:
                 running = false;
                 break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                mouse_down = true;
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+                mouse_down = false;
+                break;
             case SDL_EVENT_KEY_DOWN:
+                if (e.key.key == SDLK_D) {
+                    // Delete all xkcds
+                    animation_t animation = create_animation(ANIMATION_DURATION, ease_in_sine, true);
+                    for (int i = 0; i < num_xkcds; i++) {
+                        xkcds[i].animation = animation;
+                        xkcds[i].destroy = true;
+                    }
+                    break;
+                }
                 if (e.key.key == SDLK_ESCAPE) {
-                    // Toggle overlay
-                    input_overlay.open = !input_overlay.open;
-                    // Swap animations
-                    if (input_overlay.open) {
-                        input_overlay.current_animation = input_overlay.open_animation;
-                    }
-                    else {
-                        input_overlay.current_animation = input_overlay.close_animation;
-                    }
+                    running = false;
                     break;
                 }
         }
     }
+}
+
+void update_xkcd(xkcd_t* xkcd) {
+    update_animation(&xkcd->animation);
+    float animation_value = xkcd->animation.value;
+    xkcd->rect.w = animation_value * xkcd->size;
+    xkcd->rect.h = animation_value * xkcd->size;
 }
 
 void update(void) {
@@ -152,25 +196,43 @@ void update(void) {
         SDL_Delay(time_to_wait);
     }
     seconds_passed += FRAME_TARGET_TIME_SECONDS;
-    update_animation(&input_overlay.current_animation);
+    if (mouse_down && num_xkcds < MAX_NUM_XKCD) {
+        float x = mouse_x - (XKCD_SIZE * 0.5f);
+        float y = mouse_y - (XKCD_SIZE * 0.5f);
+        xkcds[num_xkcds] = create_xkcd(num_xkcds, x, y, XKCD_SIZE);
+        num_xkcds++;
+    }
+    for (int i = 0; i < num_xkcds; i++) {
+        update_xkcd(&xkcds[i]);
+    }
     start_time = SDL_GetTicks();
 }
 
-void render_input_overlay(void) {
-    SDL_SetRenderDrawColor(renderer, 0xff, 0x18, 0x18, 0xff);
-    SDL_FRect input_overlay_rect = {
-        .x = 0,
-        .y = 0,
-        .w = window_width, 
-        .h = input_overlay.current_animation.value * (window_height * 0.3f), 
-    };
-    SDL_RenderFillRect(renderer, &input_overlay_rect);
+void render_xkcd(xkcd_t* xkcd) {
+    SDL_SetRenderDrawColor(renderer, 0x18, 0x18, 0x18, 0xff);
+    bool animation_done = xkcd->animation.done;
+    bool draw_border = !xkcd->destroy || (xkcd->destroy && !animation_done);
+    SDL_RenderFillRect(renderer, &xkcd->rect);
+ 
+    // Draw border
+    if (draw_border) {
+        // Are we hovering over it?
+        if (inside_rect(mouse_x, mouse_y, xkcd->rect.x, xkcd->rect.y, xkcd->rect.w, xkcd->rect.h)) {
+            SDL_SetRenderDrawColor(renderer, 0x9e, 0x95, 0xc7, 0xff);
+        }
+        else {
+            SDL_SetRenderDrawColor(renderer, 0xff, 0xdd, 0x33, 0xff);
+        }
+        SDL_RenderRect(renderer, &xkcd->rect);
+    }
 }
 
 void render(void) {
     SDL_SetRenderDrawColor(renderer, 0x18, 0x18, 0x18, 0xff);
     SDL_RenderClear(renderer);
-    render_input_overlay();
+    for (int i = 0; i < num_xkcds; i++) {
+        render_xkcd(&xkcds[i]);
+    }
     SDL_RenderPresent(renderer);
 }
 
