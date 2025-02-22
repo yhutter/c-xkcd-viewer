@@ -8,7 +8,6 @@
 #define FRAME_TARGET_TIME_SECONDS (FRAME_TARGET_TIME * 0.001f)
 
 #define ANIMATION_DURATION 0.6f
-#define XKCD_SIZE 64.0f
 #define MAX_NUM_XKCD 1024
 
 typedef enum {
@@ -32,7 +31,8 @@ typedef struct {
     bool destroy;
     int index;
     SDL_FRect rect;
-    float size;
+    float size_x;
+    float size_y;
 } xkcd_t;
 
 SDL_Renderer* renderer = NULL;
@@ -44,6 +44,10 @@ bool running = false;
 float mouse_x = 0.0f;
 float mouse_y = 0.0f;
 bool mouse_down = false;
+
+// Mouse position at the point of time the user has pressed the mouse button
+float mouse_down_x = 0.0f; 
+float mouse_down_y = 0.0f;
 
 Uint64 start_time;
 float seconds_passed = 0.0f;
@@ -78,7 +82,7 @@ animation_t create_animation(float duration, animation_kind kind, bool reverse) 
     return result;
 }
 
-xkcd_t create_xkcd(int index, float x, float y, float size) {
+xkcd_t create_xkcd(int index, float x, float y, float size_x, float size_y) {
     animation_t animation = create_animation(ANIMATION_DURATION, ease_out_expo, false);
     xkcd_t result = {
         .animation = animation,
@@ -89,7 +93,8 @@ xkcd_t create_xkcd(int index, float x, float y, float size) {
             .w = 0,
             .h = 0, 
         },
-        .size = size,
+        .size_x = size_x,
+        .size_y = size_y,
         .index = index 
     };
     return result;
@@ -154,10 +159,20 @@ void process(void) {
                 running = false;
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                SDL_GetMouseState(&mouse_down_x, &mouse_down_y);
                 mouse_down = true;
                 break;
             case SDL_EVENT_MOUSE_BUTTON_UP:
                 mouse_down = false;
+                // Create new xkc
+                if (num_xkcds < MAX_NUM_XKCD) {
+                    float size_x = fabs(mouse_x - mouse_down_x);
+                    float size_y = fabs(mouse_y - mouse_down_y);
+                    float x = mouse_x - (size_x * 0.5f);
+                    float y = mouse_y - (size_y * 0.5f);
+                    xkcds[num_xkcds] = create_xkcd(num_xkcds, x, y, size_x, size_y);
+                    num_xkcds++;
+                }
                 break;
             case SDL_EVENT_KEY_DOWN:
                 if (e.key.key == SDLK_D) {
@@ -180,8 +195,8 @@ void process(void) {
 void update_xkcd(xkcd_t* xkcd) {
     update_animation(&xkcd->animation);
     float animation_value = xkcd->animation.value;
-    xkcd->rect.w = animation_value * xkcd->size;
-    xkcd->rect.h = animation_value * xkcd->size;
+    xkcd->rect.w = animation_value * xkcd->size_x;
+    xkcd->rect.h = animation_value * xkcd->size_y;
 }
 
 void update(void) {
@@ -190,12 +205,6 @@ void update(void) {
         SDL_Delay(time_to_wait);
     }
     seconds_passed += FRAME_TARGET_TIME_SECONDS;
-    if (mouse_down && num_xkcds < MAX_NUM_XKCD) {
-        float x = mouse_x - (XKCD_SIZE * 0.5f);
-        float y = mouse_y - (XKCD_SIZE * 0.5f);
-        xkcds[num_xkcds] = create_xkcd(num_xkcds, x, y, XKCD_SIZE);
-        num_xkcds++;
-    }
     for (int i = 0; i < num_xkcds; i++) {
         update_xkcd(&xkcds[i]);
     }
