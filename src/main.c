@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <math.h>
 
-#define FPS 60
+#define FPS 144
 #define FRAME_TARGET_TIME (1000.0f / FPS)
 #define FRAME_TARGET_TIME_SECONDS (FRAME_TARGET_TIME * 0.001f)
 
@@ -50,11 +50,6 @@ float seconds_passed = 0.0f;
 
 xkcd_t xkcds[MAX_NUM_XKCD];
 int num_xkcds = 0;
-
-static inline float lerp(float min, float max, float t) {
-    float range = max - min;
-    return min + (t * range);
-}
 
 static inline float remap(float value, float in_min, float in_max, float out_min, float out_max) {
     float in_range = in_max - in_min;
@@ -122,13 +117,12 @@ void update_animation(animation_t* animation) {
     // Keep updating the animation
     else {
         animation->progress = animation->now / animation->duration;
-        float t = lerp(0.0f, 1.0f, animation->progress);
         switch (animation->kind) {
             case ease_out_expo:
-                animation->value = 1.0f - pow(2.0f, (-10.0f * t));
+                animation->value = 1.0f - pow(2.0f, (-10.0f * animation->progress));
                 break;
             case ease_in_sine:
-                animation->value = 1.0f - cosf((t * M_PI) / 2.0f);
+                animation->value = 1.0f - cosf((animation->progress * M_PI) / 2.0f);
                 break;
         }
         if (animation->reverse) {
