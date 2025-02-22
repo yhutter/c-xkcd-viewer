@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <math.h>
 
-#define FPS 144
+#define FPS 60
 #define FRAME_TARGET_TIME (1000.0f / FPS)
 #define FRAME_TARGET_TIME_SECONDS (FRAME_TARGET_TIME * 0.001f)
 
@@ -54,6 +54,8 @@ float seconds_passed = 0.0f;
 
 xkcd_t xkcds[MAX_NUM_XKCD];
 int num_xkcds = 0;
+
+SDL_FRect xkcd_indication_rect = {0};
 
 static inline float remap(float value, float in_min, float in_max, float out_min, float out_max) {
     float in_range = in_max - in_min;
@@ -166,11 +168,11 @@ void process(void) {
                 mouse_down = false;
                 // Create new xkc
                 if (num_xkcds < MAX_NUM_XKCD) {
-                    float size_x = fabs(mouse_x - mouse_down_x);
-                    float size_y = fabs(mouse_y - mouse_down_y);
-                    float x = mouse_x - (size_x * 0.5f);
-                    float y = mouse_y - (size_y * 0.5f);
-                    xkcds[num_xkcds] = create_xkcd(num_xkcds, x, y, size_x, size_y);
+                    float w = mouse_x - mouse_down_x;
+                    float h = mouse_y - mouse_down_y;
+                    float x = mouse_down_x;
+                    float y = mouse_down_y;
+                    xkcds[num_xkcds] = create_xkcd(num_xkcds, x, y, w, h);
                     num_xkcds++;
                 }
                 break;
@@ -205,6 +207,17 @@ void update(void) {
         SDL_Delay(time_to_wait);
     }
     seconds_passed += FRAME_TARGET_TIME_SECONDS;
+    // Update indication rect
+    float w = mouse_x - mouse_down_x;
+    float h = mouse_y - mouse_down_y;
+    float x = mouse_down_x;
+    float y = mouse_down_y;
+    xkcd_indication_rect = (SDL_FRect) {
+        .x = x,
+        .y = y,
+        .w = w,
+        .h = h 
+    };
     for (int i = 0; i < num_xkcds; i++) {
         update_xkcd(&xkcds[i]);
     }
@@ -233,6 +246,11 @@ void render_xkcd(xkcd_t* xkcd) {
 void render(void) {
     SDL_SetRenderDrawColor(renderer, 0x18, 0x18, 0x18, 0xff);
     SDL_RenderClear(renderer);
+    // Render indication
+    if (mouse_down) {
+        SDL_SetRenderDrawColor(renderer, 0xff, 0xff, 0xff, 0xff);
+    }
+    SDL_RenderRect(renderer, &xkcd_indication_rect);
     for (int i = 0; i < num_xkcds; i++) {
         render_xkcd(&xkcds[i]);
     }
