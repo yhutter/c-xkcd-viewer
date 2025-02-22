@@ -1,4 +1,5 @@
 #include <SDL3/SDL.h>
+#include <SDL3_ttf/SDL_ttf.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <math.h>
@@ -9,6 +10,8 @@
 
 #define ANIMATION_DURATION 0.6f
 #define MAX_NUM_XKCD 1024
+
+#define FONT_PATH "./font/Alegreya-Regular.ttf"
 
 typedef enum {
     ease_out_expo,
@@ -33,6 +36,8 @@ typedef struct {
     SDL_FRect rect;
     float size_x;
     float size_y;
+    TTF_Font* font;
+    TTF_Text* text;
 } xkcd_t;
 
 SDL_Renderer* renderer = NULL;
@@ -40,6 +45,8 @@ SDL_Window* window = NULL;
 int window_width = 1280;
 int window_height = 720;
 bool running = false;
+
+TTF_TextEngine* text_engine = NULL;
 
 float mouse_x = 0.0f;
 float mouse_y = 0.0f;
@@ -54,7 +61,6 @@ float seconds_passed = 0.0f;
 
 xkcd_t xkcds[MAX_NUM_XKCD];
 int num_xkcds = 0;
-
 SDL_FRect xkcd_indication_rect = {0};
 
 static inline float remap(float value, float in_min, float in_max, float out_min, float out_max) {
@@ -86,6 +92,10 @@ animation_t create_animation(float duration, animation_kind kind, bool reverse) 
 
 xkcd_t create_xkcd(int index, float x, float y, float size_x, float size_y) {
     animation_t animation = create_animation(ANIMATION_DURATION, ease_out_expo, false);
+    // Create font size related to size of xkcd rectangle
+    float font_size = fabs(size_y * 0.08);
+    TTF_Font* font = TTF_OpenFont(FONT_PATH, font_size);
+    TTF_Text* text = TTF_CreateText(text_engine, font, "Hello World", 0);
     xkcd_t result = {
         .animation = animation,
         .destroy = false,
@@ -97,7 +107,9 @@ xkcd_t create_xkcd(int index, float x, float y, float size_x, float size_y) {
         },
         .size_x = size_x,
         .size_y = size_y,
-        .index = index 
+        .index = index,
+        .font = font,
+        .text = text
     };
     return result;
 }
@@ -140,13 +152,28 @@ void update_animation(animation_t* animation) {
 
 
 bool initialize() {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        SDL_Log("Could not initialize SDL: '%s'\n", SDL_GetError());
+        return false;
+    }
     if (!SDL_CreateWindowAndRenderer("XKCD Viewer", window_width, window_height, 0, &window, &renderer)) {
         SDL_Log("Could not create window and renderer: '%s'\n", SDL_GetError());
         return false;
     }
 
+    if (!TTF_Init()) {
+        SDL_Log("Could not initialize SDL TTF: '%s'\n", SDL_GetError());
+        return false;
+    }
+
     // Enable VSync
     SDL_SetRenderVSync(renderer, 1);
+
+    text_engine = TTF_CreateRendererTextEngine(renderer);
+    if (text_engine == NULL) {
+        SDL_Log("Could not create text engine: '%s'\n", SDL_GetError());
+        return false;
+    }
     start_time = SDL_GetTicks();
 
     return true;
@@ -228,7 +255,17 @@ void render_xkcd(xkcd_t* xkcd) {
     SDL_SetRenderDrawColor(renderer, 0x18, 0x18, 0x18, 0xff);
     bool animation_done = xkcd->animation.done;
     bool draw_border = !xkcd->destroy || (xkcd->destroy && !animation_done);
+    bool draw_text = !xkcd->destroy;
     SDL_RenderFillRect(renderer, &xkcd->rect);
+
+    // Render text
+    if (draw_text) {
+        SDL_SetRenderDrawColor(renderer, 0xe4, 0xe4, 0xef, 0xff);
+        int text_w;
+        int text_h;
+        TTF_GetTextSize(xkcd->text, &text_w, &text_h);
+        TTF_DrawRendererText(xkcd->text, xkcd->rect.x + (xkcd->rect.w - text_w) * 0.5, xkcd->rect.y + (xkcd->rect.h - text_h) * 0.5f);
+    }
  
     // Draw border
     if (draw_border) {
@@ -246,11 +283,14 @@ void render_xkcd(xkcd_t* xkcd) {
 void render(void) {
     SDL_SetRenderDrawColor(renderer, 0x18, 0x18, 0x18, 0xff);
     SDL_RenderClear(renderer);
+
+    
     // Render indication
     if (mouse_down) {
         SDL_SetRenderDrawColor(renderer, 0xff, 0xff, 0xff, 0xff);
+        SDL_RenderRect(renderer, &xkcd_indication_rect);
     }
-    SDL_RenderRect(renderer, &xkcd_indication_rect);
+
     for (int i = 0; i < num_xkcds; i++) {
         render_xkcd(&xkcds[i]);
     }
@@ -258,8 +298,14 @@ void render(void) {
 }
 
 void destroy(void) {
+    for (int i = 0; i < num_xkcds; i++) {
+        TTF_DestroyText(xkcds[i].text);
+        TTF_CloseFont(xkcds[i].font);
+    }
+    TTF_DestroyRendererTextEngine(text_engine);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
+    TTF_Quit();
     SDL_Quit();
 }
 
