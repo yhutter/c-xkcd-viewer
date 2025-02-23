@@ -93,7 +93,7 @@ animation_t create_animation(float duration, animation_kind kind, bool reverse) 
 xkcd_t create_xkcd(float x, float y, float size_x, float size_y) {
     animation_t animation = create_animation(ANIMATION_DURATION, ease_out_expo, false);
     // Create font size related to size of xkcd rectangle
-    float font_size = ceilf(fabs(size_y * 0.1));
+    float font_size = ceilf(size_y * 0.1);
     TTF_Font* font = TTF_OpenFont(FONT_PATH, font_size);
     TTF_Text* text = TTF_CreateText(text_engine, font, "Hello World", 0);
     xkcd_t result = {
@@ -150,6 +150,28 @@ void update_animation(animation_t* animation) {
     }
 }
 
+SDL_FRect rect_from_mouse(void) {
+    float w = mouse_x - mouse_down_x;
+    float h = mouse_y - mouse_down_y;
+    float x = mouse_down_x;
+    float y = mouse_down_y;
+    if (w < 0) {
+        w = fabs(w);
+        x = x - w;
+    }
+    if (h < 0) {
+        h = fabs(h);
+        y = y - h;
+    }
+    SDL_FRect result = {
+        .x = x,
+        .y = y,
+        .w = w,
+        .h = h 
+    };
+    return result;
+}
+
 
 bool initialize() {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -195,11 +217,8 @@ void process(void) {
                 mouse_down = false;
                 // Create new xkc
                 if (num_xkcds < MAX_NUM_XKCD) {
-                    float w = mouse_x - mouse_down_x;
-                    float h = mouse_y - mouse_down_y;
-                    float x = mouse_down_x;
-                    float y = mouse_down_y;
-                    xkcds[num_xkcds] = create_xkcd(x, y, w, h);
+                    SDL_FRect rect = rect_from_mouse();
+                    xkcds[num_xkcds] = create_xkcd(rect.x, rect.y, rect.w, rect.h);
                     num_xkcds++;
                 }
                 break;
@@ -234,6 +253,7 @@ void update_xkcd(xkcd_t* xkcd) {
     xkcd->rect.h = animation_value * xkcd->size_y;
 }
 
+
 void update(void) {
     int time_to_wait = FRAME_TARGET_TIME - (SDL_GetTicks() - start_time);
     if (time_to_wait > 0 && time_to_wait <= FRAME_TARGET_TIME) {
@@ -241,17 +261,7 @@ void update(void) {
     }
     seconds_passed += FRAME_TARGET_TIME_SECONDS;
     // Update indication rect
-    float w = mouse_x - mouse_down_x;
-    float h = mouse_y - mouse_down_y;
-    float x = mouse_down_x;
-    float y = mouse_down_y;
-    xkcd_indication_rect = (SDL_FRect) {
-        .x = x,
-        .y = y,
-        .w = w,
-        .h = h 
-    };
-
+    xkcd_indication_rect = rect_from_mouse();
     for (int i = 0; i < num_xkcds; i++) {
         update_xkcd(&xkcds[i]);
     }
