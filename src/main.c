@@ -70,8 +70,8 @@ static inline float remap(float value, float in_min, float in_max, float out_min
     return out_min + (percentage * out_range);
 }
 
-static inline bool inside_rect(float x, float y, float x0, float y0, float w, float h) {
-    if (x >= x0 && x <= (x0 + w) && y >= y0 && y <= (y0 + h)) {
+static inline bool inside_rect(float x, float y, SDL_FRect rect) {
+    if (x >= rect.x && x <= (rect.x + rect.w) && y >= rect.y && y <= (rect.y + rect.h)) {
         return true;
     }
     return false;
@@ -115,9 +115,9 @@ xkcd_t create_xkcd(float x, float y, float size_x, float size_y) {
 }
 
 xkcd_t* xkcd_at_mouse(void) {
-    for (int i = 0; i < num_xkcds; i++) {
+    for (int i = num_xkcds; i >= 0; i--) {
         xkcd_t* xkcd = &xkcds[i];
-        if (inside_rect(mouse_x, mouse_y, xkcd->rect.x, xkcd->rect.y, xkcd->rect.w, xkcd->rect.h)) {
+        if (inside_rect(mouse_x, mouse_y, xkcd->rect)) {
             return xkcd;
         }
     }
@@ -172,6 +172,14 @@ SDL_FRect rect_from_mouse(void) {
     return result;
 }
 
+bool rect_intersects(SDL_FRect a, SDL_FRect b) {
+    // Check if any of the 4 corners intersect
+    bool top_left = inside_rect(b.x, b.y, a);
+    bool bottom_left = inside_rect(b.x, b.y + b.h, a);
+    bool top_right = inside_rect(b.x + b.w, b.y, a);
+    bool bottom_right = inside_rect(b.x + b.w, b.y + b.h, a);
+    return top_left || bottom_left || top_right || bottom_right;
+}
 
 bool initialize() {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -260,7 +268,6 @@ void update(void) {
         SDL_Delay(time_to_wait);
     }
     seconds_passed += FRAME_TARGET_TIME_SECONDS;
-    // Update indication rect
     xkcd_indication_rect = rect_from_mouse();
     for (int i = 0; i < num_xkcds; i++) {
         update_xkcd(&xkcds[i]);
@@ -277,6 +284,7 @@ void render_xkcd(xkcd_t* xkcd) {
     bool draw_border = !xkcd->destroy || (xkcd->destroy && !animation_done);
     bool draw_text = !xkcd->destroy;
     SDL_RenderFillRect(renderer, &xkcd->rect);
+    bool is_hovering = inside_rect(mouse_x, mouse_y, xkcd->rect);
 
     // Render text
     if (draw_text) {
@@ -289,8 +297,7 @@ void render_xkcd(xkcd_t* xkcd) {
  
     // Draw border
     if (draw_border) {
-        // Are we hovering over it?
-        if (inside_rect(mouse_x, mouse_y, xkcd->rect.x, xkcd->rect.y, xkcd->rect.w, xkcd->rect.h)) {
+        if (is_hovering) {
             SDL_SetRenderDrawColor(renderer, 0x9e, 0x95, 0xc7, 0xff);
         }
         else {
