@@ -31,8 +31,8 @@ typedef struct {
 
 typedef struct {
     animation_t animation;
-    bool destroy;
-    int index;
+    bool destroy; // Mark for destruction (however the animation might still be ongoing)
+    bool destroyed; // Mark for destruction and animation has finished
     SDL_FRect rect;
     float size_x;
     float size_y;
@@ -90,15 +90,16 @@ animation_t create_animation(float duration, animation_kind kind, bool reverse) 
     return result;
 }
 
-xkcd_t create_xkcd(int index, float x, float y, float size_x, float size_y) {
+xkcd_t create_xkcd(float x, float y, float size_x, float size_y) {
     animation_t animation = create_animation(ANIMATION_DURATION, ease_out_expo, false);
     // Create font size related to size of xkcd rectangle
-    float font_size = fabs(size_y * 0.08);
+    float font_size = ceilf(fabs(size_y * 0.1));
     TTF_Font* font = TTF_OpenFont(FONT_PATH, font_size);
     TTF_Text* text = TTF_CreateText(text_engine, font, "Hello World", 0);
     xkcd_t result = {
         .animation = animation,
         .destroy = false,
+        .destroyed = false,
         .rect = {
             .x = x,
             .y = y,
@@ -107,21 +108,20 @@ xkcd_t create_xkcd(int index, float x, float y, float size_x, float size_y) {
         },
         .size_x = size_x,
         .size_y = size_y,
-        .index = index,
         .font = font,
         .text = text
     };
     return result;
 }
 
-int xkcd_index_at_mouse(void) {
+xkcd_t* xkcd_at_mouse(void) {
     for (int i = 0; i < num_xkcds; i++) {
-        xkcd_t xkcd = xkcds[i];
-        if (inside_rect(mouse_x, mouse_y, xkcd.rect.x, xkcd.rect.y, xkcd.rect.w, xkcd.rect.h)) {
-            return xkcd.index;
+        xkcd_t* xkcd = &xkcds[i];
+        if (inside_rect(mouse_x, mouse_y, xkcd->rect.x, xkcd->rect.y, xkcd->rect.w, xkcd->rect.h)) {
+            return xkcd;
         }
     }
-    return -1;
+    return NULL;
 }
 
 void update_animation(animation_t* animation) {
@@ -199,18 +199,20 @@ void process(void) {
                     float h = mouse_y - mouse_down_y;
                     float x = mouse_down_x;
                     float y = mouse_down_y;
-                    xkcds[num_xkcds] = create_xkcd(num_xkcds, x, y, w, h);
+                    xkcds[num_xkcds] = create_xkcd(x, y, w, h);
                     num_xkcds++;
                 }
                 break;
             case SDL_EVENT_KEY_DOWN:
                 if (e.key.key == SDLK_D) {
-                    // Delete all xkcds
-                    animation_t animation = create_animation(ANIMATION_DURATION, ease_in_sine, true);
-                    for (int i = 0; i < num_xkcds; i++) {
-                        xkcds[i].animation = animation;
-                        xkcds[i].destroy = true;
+                    // Mark xkcd for deletion and assign new "delete" animation
+                    xkcd_t* xkcd_to_delete = xkcd_at_mouse();
+                    if (xkcd_to_delete == NULL) {
+                        return;
                     }
+                    animation_t animation = create_animation(ANIMATION_DURATION, ease_in_sine, true);
+                    xkcd_to_delete->animation = animation;
+                    xkcd_to_delete->destroy = true;
                     break;
                 }
                 if (e.key.key == SDLK_ESCAPE) {
@@ -222,7 +224,11 @@ void process(void) {
 }
 
 void update_xkcd(xkcd_t* xkcd) {
+    if (xkcd->destroyed) {
+        return;
+    }
     update_animation(&xkcd->animation);
+    xkcd->destroyed = xkcd->destroy && xkcd->animation.done;
     float animation_value = xkcd->animation.value;
     xkcd->rect.w = animation_value * xkcd->size_x;
     xkcd->rect.h = animation_value * xkcd->size_y;
@@ -245,6 +251,7 @@ void update(void) {
         .w = w,
         .h = h 
     };
+
     for (int i = 0; i < num_xkcds; i++) {
         update_xkcd(&xkcds[i]);
     }
@@ -252,6 +259,9 @@ void update(void) {
 }
 
 void render_xkcd(xkcd_t* xkcd) {
+    if (xkcd->destroyed) {
+        return;
+    }
     SDL_SetRenderDrawColor(renderer, 0x18, 0x18, 0x18, 0xff);
     bool animation_done = xkcd->animation.done;
     bool draw_border = !xkcd->destroy || (xkcd->destroy && !animation_done);
@@ -284,7 +294,6 @@ void render(void) {
     SDL_SetRenderDrawColor(renderer, 0x18, 0x18, 0x18, 0xff);
     SDL_RenderClear(renderer);
 
-    
     // Render indication
     if (mouse_down) {
         SDL_SetRenderDrawColor(renderer, 0xff, 0xff, 0xff, 0xff);
