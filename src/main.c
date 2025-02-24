@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <math.h>
 #include <curl/curl.h>
+#include "json.h"
+#include <assert.h>
 
 #define FPS 60
 #define FRAME_TARGET_TIME (1000.0f / FPS)
@@ -41,6 +43,8 @@ typedef struct {
     float font_size;
     int index;
     bool loading;
+    TTF_Font* font;
+    char message[1024];
 } xkcd_t;
 
 typedef struct {
@@ -99,6 +103,41 @@ animation_t create_animation(float duration, animation_kind kind, bool reverse) 
     return result;
 }
 
+char* get_string(struct json_value_s* root, const char* key, int* size) {
+    assert(root->type == json_type_object);
+    struct json_object_s* object = (struct json_object_s*) root->payload;
+    struct json_object_element_s* element = object->start;
+    while (element) {
+        if (element->value->type == json_type_string) {
+            if (strcmp(element->name->string, key) == 0) {
+                struct json_string_s* value = json_value_as_string(element->value);
+                char* buffer = (char*) malloc(sizeof(char) * value->string_size);
+                *size = value->string_size;
+                memcpy(buffer, value->string, value->string_size);
+                return buffer;
+            }
+        }
+        element = element->next;
+    }
+    return NULL;
+}
+
+static size_t write_callback(void* contents, size_t size, size_t bytes, void* data) {
+    xkcd_request_t* request  = (xkcd_request_t*) data;
+    size_t real_size = size * bytes;
+    char json[real_size];
+    memcpy(&json, contents, real_size);
+    struct json_value_s* root = json_parse(json, real_size);
+    assert(root->type == json_type_object);
+    int string_size;
+    char* title = get_string(root, "title", &string_size);
+    memcpy(xkcds[request->index].message, title, string_size);
+    free(root);
+    free(title);
+    xkcds[request->index].loading = false;
+    return real_size;
+}
+
 
 int make_xkcd_request(void* data) {
     CURL* curl;
@@ -109,13 +148,16 @@ int make_xkcd_request(void* data) {
     SDL_asprintf(&request_url, "https://xkcd.com/%d/info.0.json", request->xkcd_number);
     if (curl) {
         curl_easy_setopt(curl, CURLOPT_URL, request_url);
+        // Define write callback (will get called with response data)
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        // Add user data which we can access in the write callback
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*) request);
         res = curl_easy_perform(curl);
         if (res != CURLE_OK) {
             SDL_Log("ERROR in performing curl request for url %s", request_url);
         }
         curl_easy_cleanup(curl);
     }
-    xkcds[request->index].loading = false;
     SDL_free(request_url);
     return 0;
 }
@@ -137,14 +179,14 @@ xkcd_t create_xkcd(int index, float x, float y, float size_x, float size_y) {
         },
         .size_x = size_x,
         .size_y = size_y,
-        .font_size = 0.0f
+        .font_size = 0.0f,
+        .font = TTF_OpenFont(FONT_PATH, 16.0f)
     };
 
     xkcd_requests[index] = (xkcd_request_t) {
         .index = index,
         .xkcd_number = 6
     };
-    SDL_Log("Creating xkcd with index %d", index);
     SDL_Thread* thread = SDL_CreateThread(make_xkcd_request, "xkcd_request_thread", (void*) &xkcd_requests[index]);
     if (thread == NULL) {
         SDL_Log("Failed to create thread");
@@ -242,15 +284,17 @@ bool initialize() {
     // Enable VSync
     SDL_SetRenderVSync(renderer, 1);
 
+    // Setup text rendering
     text_engine = TTF_CreateRendererTextEngine(renderer);
     if (text_engine == NULL) {
         SDL_Log("Could not create text engine: '%s'\n", SDL_GetError());
         return false;
     }
 
+    // Initialize curl
+    curl_global_init(CURL_GLOBAL_ALL);
 
     start_time = SDL_GetTicks();
-
     return true;
 }
 
@@ -304,7 +348,8 @@ void update_xkcd(xkcd_t* xkcd) {
     float animation_value = xkcd->animation.value;
     xkcd->rect.w = animation_value * xkcd->size_x;
     xkcd->rect.h = animation_value * xkcd->size_y;
-    xkcd->font_size = ceilf(xkcd->rect.h * 0.2);
+    xkcd->font_size = ceilf(animation_value * 0.2f * xkcd->size_y);
+    TTF_SetFontSize(xkcd->font, xkcd->font_size);
 }
 
 
@@ -325,9 +370,7 @@ void render_xkcd(xkcd_t* xkcd) {
     if (xkcd->destroyed) {
         return;
     }
-    const char* message = xkcd->loading ? "Loading" : "Done!";
-    TTF_Font* font = TTF_OpenFont(FONT_PATH, xkcd->font_size);
-    TTF_Text* text = TTF_CreateText(text_engine, font, message, 0);
+    const char* message = xkcd->loading ? "Loading" : xkcd->message;
     SDL_SetRenderDrawColor(renderer, 0x18, 0x18, 0x18, 0xff);
     bool animation_done = xkcd->animation.done;
     bool draw_border = !xkcd->destroy || (xkcd->destroy && !animation_done);
@@ -335,12 +378,14 @@ void render_xkcd(xkcd_t* xkcd) {
     bool is_hovering = inside_rect(mouse_x, mouse_y, xkcd->rect);
     
     // Render text
+    TTF_Text* text = TTF_CreateText(text_engine, xkcd->font, message, 0);
     SDL_SetRenderDrawColor(renderer, 0xe4, 0xe4, 0xef, 0xff);
     int text_w;
     int text_h;
     TTF_GetTextSize(text, &text_w, &text_h);
     TTF_DrawRendererText(text, xkcd->rect.x + (xkcd->rect.w - text_w) * 0.5, xkcd->rect.y + (xkcd->rect.h - text_h) * 0.5f);
- 
+    TTF_DestroyText(text);
+    
     // Draw border
     if (draw_border) {
         if (is_hovering) {
@@ -355,8 +400,6 @@ void render_xkcd(xkcd_t* xkcd) {
         SDL_RenderRect(renderer, &xkcd->rect);
     }
 
-    TTF_DestroyText(text);
-    TTF_CloseFont(font);
 }
 
 void render(void) {
@@ -376,6 +419,10 @@ void render(void) {
 }
 
 void destroy(void) {
+    curl_global_cleanup();
+    for (int i = 0; i < num_xkcds; i++) {
+        TTF_CloseFont(xkcds[i].font);
+    }
     TTF_DestroyRendererTextEngine(text_engine);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
