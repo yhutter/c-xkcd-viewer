@@ -1,8 +1,10 @@
 #include <SDL3/SDL.h>
+#include <SDL3/SDL.h>
 #include <SDL3_ttf/SDL_ttf.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <math.h>
+#include <curl/curl.h>
 
 #define FPS 60
 #define FRAME_TARGET_TIME (1000.0f / FPS)
@@ -36,9 +38,15 @@ typedef struct {
     SDL_FRect rect;
     float size_x;
     float size_y;
-    TTF_Font* font;
-    TTF_Text* text;
+    float font_size;
+    int index;
+    bool loading;
 } xkcd_t;
+
+typedef struct {
+    int index;
+    int xkcd_number;
+} xkcd_request_t;
 
 SDL_Renderer* renderer = NULL;
 SDL_Window* window = NULL;
@@ -60,6 +68,7 @@ Uint64 start_time;
 float seconds_passed = 0.0f;
 
 xkcd_t xkcds[MAX_NUM_XKCD];
+xkcd_request_t xkcd_requests[MAX_NUM_XKCD];
 int num_xkcds = 0;
 SDL_FRect xkcd_indication_rect = {0};
 
@@ -90,13 +99,33 @@ animation_t create_animation(float duration, animation_kind kind, bool reverse) 
     return result;
 }
 
-xkcd_t create_xkcd(float x, float y, float size_x, float size_y) {
+
+int make_xkcd_request(void* data) {
+    CURL* curl;
+    CURLcode res;
+    curl = curl_easy_init();
+    xkcd_request_t* request  = (xkcd_request_t*) data;
+    char* request_url = NULL;
+    SDL_asprintf(&request_url, "https://xkcd.com/%d/info.0.json", request->xkcd_number);
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, request_url);
+        res = curl_easy_perform(curl);
+        if (res != CURLE_OK) {
+            SDL_Log("ERROR in performing curl request for url %s", request_url);
+        }
+        curl_easy_cleanup(curl);
+    }
+    xkcds[request->index].loading = false;
+    SDL_free(request_url);
+    return 0;
+}
+
+xkcd_t create_xkcd(int index, float x, float y, float size_x, float size_y) {
     animation_t animation = create_animation(ANIMATION_DURATION, ease_out_expo, false);
-    // Create font size related to size of xkcd rectangle
-    float font_size = ceilf(size_y * 0.1);
-    TTF_Font* font = TTF_OpenFont(FONT_PATH, font_size);
-    TTF_Text* text = TTF_CreateText(text_engine, font, "Hello World", 0);
+
     xkcd_t result = {
+        .index = index,
+        .loading = true,
         .animation = animation,
         .destroy = false,
         .destroyed = false,
@@ -108,9 +137,22 @@ xkcd_t create_xkcd(float x, float y, float size_x, float size_y) {
         },
         .size_x = size_x,
         .size_y = size_y,
-        .font = font,
-        .text = text
+        .font_size = 0.0f
     };
+
+    xkcd_requests[index] = (xkcd_request_t) {
+        .index = index,
+        .xkcd_number = 6
+    };
+    SDL_Log("Creating xkcd with index %d", index);
+    SDL_Thread* thread = SDL_CreateThread(make_xkcd_request, "xkcd_request_thread", (void*) &xkcd_requests[index]);
+    if (thread == NULL) {
+        SDL_Log("Failed to create thread");
+    }
+    else {
+        // Run in background, will automatically be cleaned up once done
+        SDL_DetachThread(thread);
+    }
     return result;
 }
 
@@ -181,6 +223,7 @@ bool rect_intersects(SDL_FRect a, SDL_FRect b) {
     return top_left || bottom_left || top_right || bottom_right;
 }
 
+
 bool initialize() {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         SDL_Log("Could not initialize SDL: '%s'\n", SDL_GetError());
@@ -204,6 +247,8 @@ bool initialize() {
         SDL_Log("Could not create text engine: '%s'\n", SDL_GetError());
         return false;
     }
+
+
     start_time = SDL_GetTicks();
 
     return true;
@@ -226,7 +271,7 @@ void process(void) {
                 // Create new xkc
                 if (num_xkcds < MAX_NUM_XKCD) {
                     SDL_FRect rect = rect_from_mouse();
-                    xkcds[num_xkcds] = create_xkcd(rect.x, rect.y, rect.w, rect.h);
+                    xkcds[num_xkcds] = create_xkcd(num_xkcds, rect.x, rect.y, rect.w, rect.h);
                     num_xkcds++;
                 }
                 break;
@@ -259,6 +304,7 @@ void update_xkcd(xkcd_t* xkcd) {
     float animation_value = xkcd->animation.value;
     xkcd->rect.w = animation_value * xkcd->size_x;
     xkcd->rect.h = animation_value * xkcd->size_y;
+    xkcd->font_size = ceilf(xkcd->rect.h * 0.2);
 }
 
 
@@ -279,32 +325,38 @@ void render_xkcd(xkcd_t* xkcd) {
     if (xkcd->destroyed) {
         return;
     }
+    const char* message = xkcd->loading ? "Loading" : "Done!";
+    TTF_Font* font = TTF_OpenFont(FONT_PATH, xkcd->font_size);
+    TTF_Text* text = TTF_CreateText(text_engine, font, message, 0);
     SDL_SetRenderDrawColor(renderer, 0x18, 0x18, 0x18, 0xff);
     bool animation_done = xkcd->animation.done;
     bool draw_border = !xkcd->destroy || (xkcd->destroy && !animation_done);
-    bool draw_text = !xkcd->destroy;
     SDL_RenderFillRect(renderer, &xkcd->rect);
     bool is_hovering = inside_rect(mouse_x, mouse_y, xkcd->rect);
-
+    
     // Render text
-    if (draw_text) {
-        SDL_SetRenderDrawColor(renderer, 0xe4, 0xe4, 0xef, 0xff);
-        int text_w;
-        int text_h;
-        TTF_GetTextSize(xkcd->text, &text_w, &text_h);
-        TTF_DrawRendererText(xkcd->text, xkcd->rect.x + (xkcd->rect.w - text_w) * 0.5, xkcd->rect.y + (xkcd->rect.h - text_h) * 0.5f);
-    }
+    SDL_SetRenderDrawColor(renderer, 0xe4, 0xe4, 0xef, 0xff);
+    int text_w;
+    int text_h;
+    TTF_GetTextSize(text, &text_w, &text_h);
+    TTF_DrawRendererText(text, xkcd->rect.x + (xkcd->rect.w - text_w) * 0.5, xkcd->rect.y + (xkcd->rect.h - text_h) * 0.5f);
  
     // Draw border
     if (draw_border) {
         if (is_hovering) {
             SDL_SetRenderDrawColor(renderer, 0x9e, 0x95, 0xc7, 0xff);
         }
+        else if (xkcd->loading) {
+            SDL_SetRenderDrawColor(renderer, 0xf4, 0x38, 0x41, 0xff);
+        }
         else {
             SDL_SetRenderDrawColor(renderer, 0xff, 0xdd, 0x33, 0xff);
         }
         SDL_RenderRect(renderer, &xkcd->rect);
     }
+
+    TTF_DestroyText(text);
+    TTF_CloseFont(font);
 }
 
 void render(void) {
@@ -324,10 +376,6 @@ void render(void) {
 }
 
 void destroy(void) {
-    for (int i = 0; i < num_xkcds; i++) {
-        TTF_DestroyText(xkcds[i].text);
-        TTF_CloseFont(xkcds[i].font);
-    }
     TTF_DestroyRendererTextEngine(text_engine);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
